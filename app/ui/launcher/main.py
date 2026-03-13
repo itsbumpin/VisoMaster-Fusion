@@ -7,6 +7,11 @@
 # ---------------------------------------------------------------------------
 
 import sys
+
+from app.helpers.runtime_env import configure_qt_environment
+
+configure_qt_environment()
+
 from PySide6 import QtWidgets
 from .core import PATHS, must_exist, apply_theme_to_app
 from .launcher_window import LauncherWindow

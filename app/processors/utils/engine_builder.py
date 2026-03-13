@@ -6,6 +6,8 @@ import ctypes
 from pathlib import Path
 from typing import Optional, Union
 
+from app.helpers.runtime_env import check_plugin_library_compatibility
+
 try:
     import tensorrt as trt
 
@@ -47,6 +49,12 @@ class EngineBuilder:
 
         # Load custom plugins if specified
         if custom_plugin_path is not None:
+            plugin_ok, plugin_msg = check_plugin_library_compatibility(custom_plugin_path)
+            if not plugin_ok:
+                raise RuntimeError(
+                    f"TensorRT custom plugin validation failed for {custom_plugin_path}: {plugin_msg}"
+                )
+
             log.info(f"Loading custom plugin from: {custom_plugin_path}")
             if platform.system().lower() == "linux":
                 ctypes.CDLL(custom_plugin_path, mode=ctypes.RTLD_GLOBAL)

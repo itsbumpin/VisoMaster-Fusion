@@ -5,6 +5,8 @@ from queue import Queue
 from threading import Lock
 from typing import Dict, Optional
 
+from app.helpers.runtime_env import check_plugin_library_compatibility
+
 try:
     from torch.cuda import nvtx
     import tensorrt as trt
@@ -75,6 +77,12 @@ class TensorRTPredictor:
         # that use custom layers not natively supported by TensorRT.
         custom_plugin_path = kwargs.get("custom_plugin_path", None)
         if custom_plugin_path is not None:
+            plugin_ok, plugin_msg = check_plugin_library_compatibility(custom_plugin_path)
+            if not plugin_ok:
+                raise RuntimeError(
+                    f"TensorRT custom plugin validation failed for {custom_plugin_path}: {plugin_msg}"
+                )
+
             try:
                 if platform.system().lower() == "linux":
                     ctypes.CDLL(custom_plugin_path, mode=ctypes.RTLD_GLOBAL)
