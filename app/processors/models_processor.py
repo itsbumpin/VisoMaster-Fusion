@@ -52,6 +52,12 @@ from app.processors.models_data import (
 )
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
+from app.helpers.runtime_env import (
+    check_plugin_library_compatibility,
+    detect_runtime_environment,
+    print_runtime_diagnostics,
+    should_use_safe_mode,
+)
 from app.processors.utils.ref_ldm_kv_embedding import KVExtractor
 
 if TYPE_CHECKING:
@@ -191,7 +197,12 @@ class ModelsProcessor(QtCore.QObject):
         super().__init__()
         self.main_window = main_window
         self.K = K  # Assign the module-level K to an instance attribute
-        self.provider_name = "TensorRT"
+        self.runtime_env = detect_runtime_environment()
+        print_runtime_diagnostics(self.runtime_env)
+        self.safe_mode_enabled = should_use_safe_mode(self.runtime_env)
+        self.provider_name = "CUDA" if self.safe_mode_enabled else "TensorRT"
+        if self.safe_mode_enabled:
+            print("[WARN] Safe-mode enabled for Linux Blackwell runtime: preferring CUDA over TensorRT.")
         self.internal_deep_copied_kv_map: Dict[str, Dict[str, torch.Tensor]] | None = (
             None
         )
@@ -225,6 +236,8 @@ class ModelsProcessor(QtCore.QObject):
         ]
         self.syncvec = torch.empty((1, 1), dtype=torch.float32, device=self.device)
         self.nThreads = 1
+
+        self.switch_providers_priority(self.provider_name)
 
         # Initialize models and models_path
         self.models: Dict[str, onnxruntime.InferenceSession] = {}
@@ -810,6 +823,18 @@ class ModelsProcessor(QtCore.QObject):
             trt_path = self.models_trt_path[model_name]
 
             try:
+                if custom_plugin_path:
+                    plugin_ok, plugin_msg = check_plugin_library_compatibility(custom_plugin_path)
+                    if not plugin_ok:
+                        print(
+                            "[WARN] TensorRT custom plugin compatibility check failed. "
+                            f"Model={model_name}, plugin={custom_plugin_path}. {plugin_msg}"
+                        )
+                        print("[WARN] Falling back to ONNX Runtime/CUDA for this model.")
+                        self.models_trt[model_name] = None
+                        return None
+                    print(f"[INFO] TensorRT plugin validation passed for {model_name}: {plugin_msg}")
+
                 # This lock is for file-system build races
                 with self.trt_build_lock_creation_lock:
                     if trt_path not in self.trt_build_locks:
@@ -982,6 +1007,19 @@ class ModelsProcessor(QtCore.QObject):
             self.main_window.model_load_dialog.close()
 
     def switch_providers_priority(self, provider_name):
+        trt_requested = provider_name in ["TensorRT", "TensorRT-Engine"]
+
+        if trt_requested:
+            if not TENSORRT_AVAILABLE:
+                print("[WARN] TensorRT Python package is not available. Falling back to CUDA.")
+                provider_name = "CUDA"
+            elif not self.runtime_env.get("tensorrt_provider_available", False):
+                print("[WARN] ONNX Runtime TensorRT provider is unavailable. Falling back to CUDA.")
+                provider_name = "CUDA"
+            elif self.safe_mode_enabled:
+                print("[WARN] TensorRT was requested but safe-mode is enabled on Linux Blackwell. Using CUDA.")
+                provider_name = "CUDA"
+
         match provider_name:
             case "TensorRT" | "TensorRT-Engine":
                 providers = [
@@ -1002,9 +1040,10 @@ class ModelsProcessor(QtCore.QObject):
             case "CPU":
                 providers = [("CPUExecutionProvider")]
                 self.device = "cpu"
-            case "CUDA":
+            case _:
                 providers = [("CUDAExecutionProvider"), ("CPUExecutionProvider")]
                 self.device = "cuda"
+                provider_name = "CUDA"
 
         self.providers = providers
         self.provider_name = provider_name

@@ -254,6 +254,54 @@ VisoMaster-Fusion would not be possible without the incredible work of:
 -   **VR180/Ref-ldm Mod**: Glat0s (https://github.com/Glat0s/VisoMaster/tree/dev-vr180)
 -   **Many Optimizations**: Nyny (https://github.com/Elricfae/VisoMaster---Modded)
 
+
+## Linux / Runpod (CUDA 12.9) Quick Start
+
+Use this flow on fresh Linux GPU pods (including RTX PRO 6000 Blackwell):
+
+1. Create and activate a Python 3.10+ virtual environment.
+2. Install dependencies:
+
+   ```bash
+   pip install -r requirements_cu129.txt
+   ```
+
+3. Download models:
+
+   ```bash
+   python download_models.py
+   ```
+
+4. Validate your GPU runtime (driver/CUDA/TensorRT/providers/plugin deps):
+
+   ```bash
+   ./scripts/validate_linux_gpu_env.sh
+   ```
+
+5. Start the app:
+
+   ```bash
+   python main.py
+   ```
+
+### TensorRT notes for Linux / Blackwell
+
+- The app now validates runtime compatibility at startup and logs:
+  - NVIDIA driver version
+  - CUDA version
+  - GPU name
+  - TensorRT Python package version
+  - ONNX Runtime providers
+  - TensorRT shared libraries found
+- On Linux Blackwell systems, the app enables a **safe-mode default** and prefers **CUDA** when TensorRT runtime/provider compatibility is incomplete.
+- For custom TensorRT plugins (such as `model_assets/libgrid_sample_3d_plugin.so`), missing shared libraries are detected before engine load/build. If dependencies are missing (for example `libnvinfer.so.8` on a TensorRT 10 runtime), the app will clearly warn and fall back to ONNX Runtime/CUDA instead of crashing.
+
+### Current TensorRT blocker
+
+- The bundled Linux custom plugin is a prebuilt binary (`model_assets/libgrid_sample_3d_plugin.so`).
+- If it was compiled against TensorRT 8 (`libnvinfer.so.8`) and your pod only has newer TensorRT libraries, that specific plugin cannot be loaded until it is rebuilt against the target TensorRT toolchain.
+- The fallback path is now automatic and non-fatal; rebuilding that plugin is still required for full TensorRT coverage of models that depend on it.
+
 ## **Troubleshooting**
 - If you face CUDA-related issues, ensure your GPU drivers are up to date.
 - For missing models, double-check that all models are placed in the correct directories.
