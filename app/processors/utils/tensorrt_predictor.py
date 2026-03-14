@@ -72,6 +72,7 @@ class TensorRTPredictor:
         self.device = kwargs.get("device", "cuda")
         self.debug = kwargs.get("debug", False)
         self.pool_size = kwargs.get("pool_size", 10)
+        print(f"[DIAGNOSTICS] TensorRTPredictor init: device={self.device}, context_pool_size={self.pool_size}")
 
         # Load custom plugin library if provided. This is necessary for engines
         # that use custom layers not natively supported by TensorRT.
