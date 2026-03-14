@@ -27,6 +27,7 @@ from app.ui.widgets.actions import layout_actions
 from app.ui.widgets.actions import save_load_actions
 from app.ui.widgets.actions import list_view_actions
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.performance_profiler import PipelineProfiler
 from app.helpers.typing_helper import ControlTypes, FacesParametersTypes
 
 if TYPE_CHECKING:
@@ -156,6 +157,27 @@ class VideoProcessor(QObject):
         self.webcam_frame_processed_signal.connect(self.store_webcam_frame_to_display)
         self.single_frame_processed_signal.connect(self.display_current_frame)
         self.single_frame_processed_signal.connect(self.store_frame_to_display)
+        self.pipeline_profiler = PipelineProfiler(enabled=False, log_every_n_frames=60)
+
+    def _is_throughput_diagnostics_enabled(self) -> bool:
+        control = self.main_window.control
+        return bool(
+            control.get("ThroughputDiagnosticsEnableToggle", False)
+            or control.get("CommandLineDebugEnableToggle", False)
+        )
+
+    def _init_throughput_diagnostics(self):
+        enabled = self._is_throughput_diagnostics_enabled()
+        self.pipeline_profiler.reset(enabled=enabled)
+        if not enabled:
+            return
+        model_processor = self.main_window.models_processor
+        print(
+            "[DIAGNOSTICS] Throughput diagnostics enabled. "
+            f"provider={model_processor.provider_name}, providers={model_processor.providers}, "
+            f"workers={self.num_threads}, queue_depth={self.frame_queue.maxsize}, "
+            f"trt_contexts={model_processor.nThreads}"
+        )
 
     @Slot(int, QPixmap, numpy.ndarray)
     def store_frame_to_display(self, frame_number, pixmap, frame):
@@ -364,11 +386,12 @@ class VideoProcessor(QObject):
                         )
                         preview_target_height = None
 
-                ret, frame_bgr = misc_helpers.read_frame(
-                    self.media_capture,
-                    self.media_rotation,
-                    preview_target_height=preview_target_height,
-                )
+                with self.pipeline_profiler.stage("decode_frame_read_resize"):
+                    ret, frame_bgr = misc_helpers.read_frame(
+                        self.media_capture,
+                        self.media_rotation,
+                        preview_target_height=preview_target_height,
+                    )
                 if not ret:
                     print(
                         f"[ERROR] Feeder: Could not read frame {self.current_frame_number} (Mode: {'Segment' if is_segment_mode else 'Standard'})!"
@@ -434,7 +457,8 @@ class VideoProcessor(QObject):
                 )
 
                 # Put the task in the queue for the worker pool
-                self.frame_queue.put(task)
+                with self.pipeline_profiler.stage("feeder_queue_wait_put"):
+                    self.frame_queue.put(task)
 
                 # DO NOT START A WORKER HERE
                 self.current_frame_number += 1
@@ -487,7 +511,8 @@ class VideoProcessor(QObject):
                 )
 
                 # Put the task in the queue for the worker pool
-                self.frame_queue.put(task)
+                with self.pipeline_profiler.stage("feeder_queue_wait_put"):
+                    self.frame_queue.put(task)
 
             except Exception as e:
                 print(f"[ERROR] Error in _feed_webcam loop: {e}")
@@ -618,7 +643,8 @@ class VideoProcessor(QObject):
                 and not self.recording_sp.stdin.closed
             ):
                 try:
-                    self.recording_sp.stdin.write(frame.tobytes())
+                    with self.pipeline_profiler.stage("encode_write_stdin"):
+                        self.recording_sp.stdin.write(frame.tobytes())
                 except OSError as e:
                     log_prefix = (
                         f"segment {self.current_segment_index + 1}"
@@ -665,6 +691,9 @@ class VideoProcessor(QObject):
         if self.file_type != "webcam":
             # Increment for next frame
             self.next_frame_to_display += 1
+            profile_line = self.pipeline_profiler.mark_frame_done()
+            if profile_line:
+                print(profile_line)
 
     def send_frame_to_virtualcam(self, frame: numpy.ndarray):
         """Sends the given frame to the pyvirtualcam device, if enabled."""
@@ -734,6 +763,7 @@ class VideoProcessor(QObject):
 
         mode = "recording (default-style)" if self.recording else "playback"
         print(f"[INFO] Starting video {mode} processing setup...")
+        self._init_throughput_diagnostics()
 
         # 3. Set State Flags
         self.processing = True  # General flag ON
@@ -2622,6 +2652,7 @@ class VideoProcessor(QObject):
 
         # 1. Set State Flags
         self.processing = True
+        self._init_throughput_diagnostics()
         self.is_processing_segments = False
         self.recording = False
 

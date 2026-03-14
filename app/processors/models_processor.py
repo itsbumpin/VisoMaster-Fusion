@@ -216,13 +216,15 @@ class ModelsProcessor(QtCore.QObject):
         self.trt_build_locks: Dict[str, threading.Lock] = {}
         # A lock to protect the creation of new locks in the dictionary above.
         self.trt_build_lock_creation_lock = threading.Lock()
+        self.trt_cache_dir = os.environ.get("VISOMASTER_TRT_CACHE_DIR", "tensorrt-engines")
+        os.makedirs(self.trt_cache_dir, exist_ok=True)
         self.trt_ep_options = {
             "trt_engine_cache_enable": True,
-            "trt_engine_cache_path": "tensorrt-engines",
+            "trt_engine_cache_path": self.trt_cache_dir,
             "trt_timing_cache_enable": True,
-            "trt_timing_cache_path": "tensorrt-engines",
+            "trt_timing_cache_path": self.trt_cache_dir,
             "trt_dump_ep_context_model": True,
-            "trt_ep_context_file_path": "tensorrt-engines",
+            "trt_ep_context_file_path": self.trt_cache_dir,
             "trt_layer_norm_fp32_fallback": True,
             "trt_builder_optimization_level": 5,
         }
@@ -238,6 +240,7 @@ class ModelsProcessor(QtCore.QObject):
         self.nThreads = 1
 
         self.switch_providers_priority(self.provider_name)
+        print(f"[DIAGNOSTICS] TensorRT cache dir: {self.trt_cache_dir}")
 
         # Initialize models and models_path
         self.models: Dict[str, onnxruntime.InferenceSession] = {}
@@ -583,6 +586,7 @@ class ModelsProcessor(QtCore.QObject):
                     cache_is_valid = self._check_tensorrt_cache(model_name, onnx_path)
 
                     # If no engine config file or cache file exists run the prob
+                    print(f"[DIAGNOSTICS] TensorRT cache check model={model_name} cache_valid={cache_is_valid}")
                     if not cache_is_valid:
                         build_was_triggered = True  # Mark that a build was attempted
                         print(
@@ -688,12 +692,14 @@ class ModelsProcessor(QtCore.QObject):
                         self.models_path[model_name],
                         providers=self.providers,  # Use the correct 'providers'
                     )
+                    print(f"[DIAGNOSTICS] Loaded model={model_name} providers={model_instance.get_providers()}")
                 else:
                     model_instance = onnxruntime.InferenceSession(
                         self.models_path[model_name],
                         sess_options=session_options,
                         providers=self.providers,  # Use the correct 'providers'
                     )
+                    print(f"[DIAGNOSTICS] Loaded model={model_name} providers={model_instance.get_providers()}")
 
                 # This ensures the CUDA context is synchronized after a new TRT
                 # engine build, before we try to load it.
@@ -842,9 +848,11 @@ class ModelsProcessor(QtCore.QObject):
                 model_build_lock = self.trt_build_locks[trt_path]
 
                 with model_build_lock:
+                    if os.path.exists(trt_path):
+                        print(f"[DIAGNOSTICS] TensorRT engine cache hit for {model_name}: {trt_path}")
                     if not os.path.exists(trt_path):
                         print(
-                            f"[WARN] TRT engine file not found. Starting isolated build: {trt_path}"
+                            f"[DIAGNOSTICS] TensorRT engine cache miss for {model_name}. Building engine at {trt_path}"
                         )
 
                         dialog_title = "Building TensorRT Engine"
@@ -880,10 +888,10 @@ class ModelsProcessor(QtCore.QObject):
                             raise FileNotFoundError(
                                 f"[ERROR] TRT engine file still not found after isolated build: {trt_path}"
                             )
-                        print("[INFO] Isolated build successful.")
+                        print(f"[DIAGNOSTICS] TensorRT engine build complete for {model_name}.")
 
                 print(
-                    f"[INFO] Loading model: {model_name} with provider: TensorRT-Engine"
+                    f"[DIAGNOSTICS] Loading TensorRT-Engine model={model_name} path={trt_path} contexts={self.nThreads} precision={precision}"
                 )
                 model_instance = TensorRTPredictor(
                     model_path=trt_path,
@@ -1047,6 +1055,7 @@ class ModelsProcessor(QtCore.QObject):
 
         self.providers = providers
         self.provider_name = provider_name
+        print(f"[DIAGNOSTICS] Active execution provider: {self.provider_name}, provider_order={self.providers}")
         if hasattr(self, "lp_mask_crop") and self.lp_mask_crop is not None:
             self.lp_mask_crop = self.lp_mask_crop.to(self.device)
         if hasattr(self, "lp_mask_crop_latent") and self.lp_mask_crop_latent is not None:

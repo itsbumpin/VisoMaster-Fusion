@@ -112,6 +112,15 @@ class FrameWorker(threading.Thread):
             self.interpolation_block_shift,
         ) = get_scaling_transforms(control_params)
 
+
+    def _time_stage(self, name: str):
+        profiler = getattr(self.video_processor, "pipeline_profiler", None)
+        if profiler is None:
+            from contextlib import nullcontext
+
+            return nullcontext()
+        return profiler.stage(name)
+
     def run(self):
         """
         Main thread execution loop.
@@ -612,11 +621,12 @@ class FrameWorker(threading.Thread):
         img_numpy_rgb_uint8 = self.frame
         swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
         edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
-        processed_tensor_rgb_uint8 = (
-            torch.from_numpy(img_numpy_rgb_uint8)
-            .to(self.models_processor.device)
-            .permute(2, 0, 1)
-        )
+        with self._time_stage("h2d_frame_upload"):
+            processed_tensor_rgb_uint8 = (
+                torch.from_numpy(img_numpy_rgb_uint8)
+                .to(self.models_processor.device)
+                .permute(2, 0, 1)
+            )
         det_faces_data_for_display = []
 
         if control.get("VR180ModeEnableToggle", False):
@@ -903,7 +913,8 @@ class FrameWorker(threading.Thread):
             if edit_button_is_checked_global:
                 use_landmark, landmark_mode, from_points = True, "203", True
 
-            bboxes, kpss_5, kpss = self.models_processor.run_detect(
+            with self._time_stage("face_detection"):
+                bboxes, kpss_5, kpss = self.models_processor.run_detect(
                 img,
                 control["DetectorModelSelection"],
                 max_num=control["MaxFacesToDetectSlider"],
@@ -926,12 +937,13 @@ class FrameWorker(threading.Thread):
             ):
                 # if kpss_5.shape[0] > 0:
                 for i in range(len(kpss_5)):
-                    face_emb, _ = self.models_processor.run_recognize_direct(
-                        img,
-                        kpss_5[i],
-                        control["SimilarityTypeSelection"],
-                        control["RecognitionModelSelection"],
-                    )
+                    with self._time_stage("face_alignment_crop_recognition"):
+                        face_emb, _ = self.models_processor.run_recognize_direct(
+                            img,
+                            kpss_5[i],
+                            control["SimilarityTypeSelection"],
+                            control["RecognitionModelSelection"],
+                        )
                     det_faces_data_for_display.append(
                         {
                             "kps_5": kpss_5[i],
@@ -1006,11 +1018,12 @@ class FrameWorker(threading.Thread):
                                     s_e = None
 
                             kv_map_for_swap = target_face.assigned_kv_map
-                            (
-                                img,
-                                best_fface["original_face"],
-                                best_fface["swap_mask"],
-                            ) = self.swap_core(
+                            with self._time_stage("swap_restore_editor_mask_pipeline"):
+                                (
+                                    img,
+                                    best_fface["original_face"],
+                                    best_fface["swap_mask"],
+                                ) = self.swap_core(
                                 img,
                                 best_fface["kps_5"],
                                 best_fface["kps_all"],
@@ -1081,8 +1094,9 @@ class FrameWorker(threading.Thread):
                                     s_e = None
 
                             kv_map_for_swap = best_target.assigned_kv_map
-                            img, fface["original_face"], fface["swap_mask"] = (
-                                self.swap_core(
+                            with self._time_stage("swap_restore_editor_mask_pipeline"):
+                                img, fface["original_face"], fface["swap_mask"] = (
+                                    self.swap_core(
                                     img,
                                     fface["kps_5"],
                                     fface["kps_all"],
@@ -1158,9 +1172,10 @@ class FrameWorker(threading.Thread):
                 processed_tensor_rgb_uint8, control=control
             )
 
-        final_img_np_rgb_uint8 = (
-            processed_tensor_rgb_uint8.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
-        )
+        with self._time_stage("d2h_frame_download"):
+            final_img_np_rgb_uint8 = (
+                processed_tensor_rgb_uint8.permute(1, 2, 0).cpu().numpy().astype(np.uint8)
+            )
         if not final_img_np_rgb_uint8.flags["C_CONTIGUOUS"]:
             final_img_np_rgb_uint8 = np.ascontiguousarray(final_img_np_rgb_uint8)
 
