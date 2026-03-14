@@ -1047,7 +1047,10 @@ class ModelsProcessor(QtCore.QObject):
 
         self.providers = providers
         self.provider_name = provider_name
-        self.lp_mask_crop = self.lp_mask_crop.to(self.device)
+        if hasattr(self, "lp_mask_crop") and self.lp_mask_crop is not None:
+            self.lp_mask_crop = self.lp_mask_crop.to(self.device)
+        if hasattr(self, "lp_mask_crop_latent") and self.lp_mask_crop_latent is not None:
+            self.lp_mask_crop_latent = self.lp_mask_crop_latent.to(self.device)
 
         return self.provider_name
 
