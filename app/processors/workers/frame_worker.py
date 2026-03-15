@@ -883,7 +883,6 @@ class FrameWorker(threading.Thread):
                 processed_perspective_crops_details,
                 analyzed_faces_for_vr,
             )
-            torch.cuda.empty_cache()
         else:
             # --- Standard Path ---
             img = processed_tensor_rgb_uint8
@@ -929,21 +928,21 @@ class FrameWorker(threading.Thread):
                 else [0, 90, 180, 270],
             )
 
-            if (
+            has_faces = (
                 isinstance(kpss_5, np.ndarray)
                 and kpss_5.shape[0] > 0
                 or isinstance(kpss_5, list)
                 and len(kpss_5) > 0
-            ):
-                # if kpss_5.shape[0] > 0:
-                for i in range(len(kpss_5)):
-                    with self._time_stage("face_alignment_crop_recognition"):
-                        face_emb, _ = self.models_processor.run_recognize_direct(
-                            img,
-                            kpss_5[i],
-                            control["SimilarityTypeSelection"],
-                            control["RecognitionModelSelection"],
-                        )
+            )
+            if has_faces:
+                with self._time_stage("face_alignment_crop_recognition"):
+                    recognition_results = self.models_processor.run_recognize_batch_direct(
+                        img,
+                        kpss_5,
+                        control["SimilarityTypeSelection"],
+                        control["RecognitionModelSelection"],
+                    )
+                for i, (face_emb, _) in enumerate(recognition_results):
                     det_faces_data_for_display.append(
                         {
                             "kps_5": kpss_5[i],
@@ -957,6 +956,15 @@ class FrameWorker(threading.Thread):
 
             if det_faces_data_for_display:
                 if control["SwapOnlyBestMatchEnableToggle"]:
+                    # Pre-compute best target mapping once per detected face to avoid
+                    # repeated O(targets * faces * targets) matching work.
+                    face_matches = []
+                    for fface in det_faces_data_for_display:
+                        tgt, tgt_params, score = self._find_best_target_match(
+                            fface["embedding"], control
+                        )
+                        face_matches.append((fface, tgt, tgt_params, score))
+
                     for _, target_face in self.main_window.target_faces.items():
                         # Check 3: Inside standard face loop
                         if stop_event.is_set():
@@ -968,12 +976,8 @@ class FrameWorker(threading.Thread):
                         )
 
                         best_fface, best_score = None, -1.0
-                        for fface in det_faces_data_for_display:
-                            # benutze die EXISTIERENDE Matching-Logik
-                            tgt, tgt_params, score = self._find_best_target_match(
-                                fface["embedding"], control
-                            )
-                            # nur wenn dieser Face-Detection auch wirklich zu genau diesem target_face gehört:
+                        for fface, tgt, tgt_params, score in face_matches:
+                            # only use matches assigned to this target face
                             if tgt and tgt.face_id == target_face.face_id:
                                 if (
                                     score >= tgt_params["SimilarityThresholdSlider"]

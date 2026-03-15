@@ -1508,6 +1508,17 @@ class ModelsProcessor(QtCore.QObject):
             img, kps, similarity_type, arcface_model
         )
 
+    def run_recognize_batch_direct(
+        self,
+        img,
+        kps_list,
+        similarity_type="Opal",
+        arcface_model="Inswapper128ArcFace",
+    ):
+        return self.face_swappers.run_recognize_batch_direct(
+            img, kps_list, similarity_type, arcface_model
+        )
+
     def calc_inswapper_latent(self, source_embedding):
         return self.face_swappers.calc_inswapper_latent(source_embedding)
 

@@ -36,6 +36,9 @@ class FaceSwappers:
             "CSCSArcFace",
             "CSCSIDArcFace",
         ]
+        # Keep a small hot set of arcface sessions to avoid frequent unload/reload churn
+        # when different target faces use different swap models.
+        self._loaded_arcface_models: set[str] = set()
 
     def unload_models(self):
         with self.models_processor.model_lock:
@@ -94,9 +97,8 @@ class FaceSwappers:
     def run_recognize_direct(
         self, img, kps, similarity_type="Opal", arcface_model="Inswapper128ArcFace"
     ):
-        if self.current_arcface_model and self.current_arcface_model != arcface_model:
-            self.models_processor.unload_model(self.current_arcface_model)
         self.current_arcface_model = arcface_model
+        self._loaded_arcface_models.add(arcface_model)
 
         ort_session = self.models_processor.models.get(arcface_model)
         if not ort_session:
@@ -117,6 +119,123 @@ class FaceSwappers:
 
         return embedding, cropped_image
 
+    def _prepare_recognition_input(self, arcface_model, img, face_kps, similarity_type):
+        if similarity_type == "Optimal":
+            img, _ = faceutil.warp_face_by_face_landmark_5(
+                img,
+                face_kps,
+                mode="arcfacemap",
+                interpolation=v2.InterpolationMode.BILINEAR,
+            )
+        elif similarity_type == "Pearl":
+            dst = self.models_processor.arcface_dst.copy()
+            dst[:, 0] += 8.0
+            tform = trans.SimilarityTransform()
+            tform.estimate(face_kps, dst)
+            img = v2.functional.affine(
+                img,
+                tform.rotation * 57.2958,
+                (tform.translation[0], tform.translation[1]),
+                tform.scale,
+                0,
+                center=(0, 0),
+            )
+            img = v2.functional.crop(img, 0, 0, 128, 128)
+            img = self.resize_112(img)
+        else:
+            tform = trans.SimilarityTransform()
+            tform.estimate(face_kps, self.models_processor.arcface_dst)
+            img = v2.functional.affine(
+                img,
+                tform.rotation * 57.2958,
+                (tform.translation[0], tform.translation[1]),
+                tform.scale,
+                0,
+                center=(0, 0),
+            )
+            img = v2.functional.crop(img, 0, 0, 112, 112)
+
+        cropped_image = img.permute(1, 2, 0).clone()
+        if img.dtype == torch.uint8:
+            img = img.to(torch.float32)
+
+        if arcface_model == "Inswapper128ArcFace":
+            img = torch.sub(img, 127.5)
+            img = torch.div(img, 127.5)
+        elif arcface_model == "SimSwapArcFace":
+            img = torch.div(img, 255.0)
+            img = v2.functional.normalize(
+                img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace=False
+            )
+        else:
+            img = torch.div(img, 127.5)
+            img = torch.sub(img, 1)
+
+        return img, cropped_image
+
+    def run_recognize_batch_direct(
+        self,
+        img,
+        kps_list,
+        similarity_type="Opal",
+        arcface_model="Inswapper128ArcFace",
+    ):
+        if not kps_list:
+            return []
+
+        # CSCS has additional logic; keep existing path per-face.
+        if arcface_model == "CSCSArcFace":
+            return [
+                self.run_recognize_direct(img, kps, similarity_type, arcface_model)
+                for kps in kps_list
+            ]
+
+        self.current_arcface_model = arcface_model
+        self._loaded_arcface_models.add(arcface_model)
+        ort_session = self.models_processor.models.get(arcface_model)
+        if not ort_session:
+            ort_session = self.models_processor.load_model(arcface_model)
+        if not ort_session:
+            return [(None, None) for _ in kps_list]
+
+        batch_tensors = []
+        cropped_images = []
+        for face_kps in kps_list:
+            prepared, cropped = self._prepare_recognition_input(
+                arcface_model, img, face_kps, similarity_type
+            )
+            batch_tensors.append(prepared)
+            cropped_images.append(cropped)
+
+        batch = torch.stack(batch_tensors, dim=0).contiguous()
+        input_name = ort_session.get_inputs()[0].name
+        output_names = [o.name for o in ort_session.get_outputs()]
+        io_binding = ort_session.io_binding()
+        io_binding.bind_input(
+            name=input_name,
+            device_type=self.models_processor.device,
+            device_id=0,
+            element_type=np.float32,
+            shape=batch.size(),
+            buffer_ptr=batch.data_ptr(),
+        )
+        for name in output_names:
+            io_binding.bind_output(name, self.models_processor.device)
+
+        self._run_model_with_lazy_build_check(arcface_model, ort_session, io_binding)
+        outputs = io_binding.copy_outputs_to_cpu()
+        if not outputs:
+            return [(None, cropped) for cropped in cropped_images]
+
+        embeddings = outputs[0]
+        if embeddings.ndim == 1:
+            embeddings = np.expand_dims(embeddings, axis=0)
+
+        return [
+            (np.ascontiguousarray(embeddings[i]).flatten(), cropped_images[i])
+            for i in range(len(cropped_images))
+        ]
+
     def run_recognize(
         self, img, kps, similarity_type="Opal", face_swapper_model="Inswapper128"
     ):
@@ -128,72 +247,9 @@ class FaceSwappers:
         if not ort_session:
             # This is a safety check; run_recognize_direct should prevent this.
             return None, None
-
-        if similarity_type == "Optimal":
-            # Find transform & Transform
-            img, _ = faceutil.warp_face_by_face_landmark_5(
-                img,
-                face_kps,
-                mode="arcfacemap",
-                interpolation=v2.InterpolationMode.BILINEAR,
-            )
-        elif similarity_type == "Pearl":
-            # Find transform
-            dst = self.models_processor.arcface_dst.copy()
-            dst[:, 0] += 8.0
-
-            tform = trans.SimilarityTransform()
-            tform.estimate(face_kps, dst)
-
-            # Transform
-            img = v2.functional.affine(
-                img,
-                tform.rotation * 57.2958,
-                (tform.translation[0], tform.translation[1]),
-                tform.scale,
-                0,
-                center=(0, 0),
-            )
-            img = v2.functional.crop(img, 0, 0, 128, 128)
-            img = v2.Resize(
-                (112, 112), interpolation=v2.InterpolationMode.BILINEAR, antialias=False
-            )(img)
-        else:
-            # Find transform
-            tform = trans.SimilarityTransform()
-            tform.estimate(face_kps, self.models_processor.arcface_dst)
-
-            # Transform
-            img = v2.functional.affine(
-                img,
-                tform.rotation * 57.2958,
-                (tform.translation[0], tform.translation[1]),
-                tform.scale,
-                0,
-                center=(0, 0),
-            )
-            img = v2.functional.crop(img, 0, 0, 112, 112)
-
-        if arcface_model == "Inswapper128ArcFace":
-            cropped_image = img.permute(1, 2, 0).clone()
-            if img.dtype == torch.uint8:
-                img = img.to(torch.float32)  # Convert to float32 if uint8
-            img = torch.sub(img, 127.5)
-            img = torch.div(img, 127.5)
-        elif arcface_model == "SimSwapArcFace":
-            cropped_image = img.permute(1, 2, 0).clone()
-            if img.dtype == torch.uint8:
-                img = torch.div(img.to(torch.float32), 255.0)
-            img = v2.functional.normalize(
-                img, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace=False
-            )
-        else:
-            cropped_image = img.permute(1, 2, 0).clone()  # 112,112,3
-            if img.dtype == torch.uint8:
-                img = img.to(torch.float32)  # Convert to float32 if uint8
-            # Normalize
-            img = torch.div(img, 127.5)
-            img = torch.sub(img, 1)
+        img, cropped_image = self._prepare_recognition_input(
+            arcface_model, img, face_kps, similarity_type
+        )
 
         # Prepare data and find model parameters
         img = torch.unsqueeze(img, 0).contiguous()
