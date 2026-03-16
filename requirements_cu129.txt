@@ -1,33 +1,7 @@
-numpy
-opencv-python
-pillow
-scikit-image
-onnx
-protobuf
-psutil
-onnxruntime-gpu==1.22.0
-packaging
-PySide6
-kornia
-cuda-toolkit==12.9.1
-nvidia-cudnn-cu12==9.13.1.26
-tensorrt-cu12==10.9.0.34
-tensorrt-cu12_libs==10.9.0.34
-tensorrt-cu12_bindings==10.9.0.34
+# Backward-compatible aggregate requirements file.
+# For deterministic Linux/Runpod setup use scripts/install_runpod.sh.
+-r requirements-base.txt
+-r requirements-cuda-cu129.txt
 torch==2.8.0+cu129
 torchvision==0.23.0+cu129
 torchaudio==2.8.0+cu129
-tqdm
-ftfy
-regex
-pyvirtualcam
-numexpr
-onnxsim==0.4.36
-requests
-pyqt-toast-notification
-qdarkstyle
-pyqtdarktheme
-omegaconf
-einops
-lightning
-send2trash
