@@ -172,9 +172,18 @@ uv venv --python 3.11
 ```
 
 **3. Install requirements**
-```
+
+For a standard setup (including Windows), use:
+
+```sh
 uv pip install -r requirements_cu129.txt
 ```
+
+`requirements_cu129.txt` is now split into:
+
+- `requirements-base.txt` (common runtime/UI dependencies)
+- `requirements-cuda-cu129.txt` (CUDA/TensorRT/cuDNN support packages)
+- Torch packages (`torch`, `torchvision`, `torchaudio` cu129)
 
 **4. Download required models**
 ```sh
@@ -259,30 +268,47 @@ VisoMaster-Fusion would not be possible without the incredible work of:
 
 Use this flow on fresh Linux GPU pods (including RTX PRO 6000 Blackwell):
 
-1. Create and activate a Python 3.10+ virtual environment.
-2. Install dependencies:
+1. Run the one-shot installer:
 
    ```bash
-   pip install -r requirements_cu129.txt
+   ./scripts/install_runpod.sh
    ```
 
-3. Download models:
+   What it does:
+
+   - Creates/uses `.venv` (override with `VENV_DIR=/path ./scripts/install_runpod.sh`)
+   - Installs torch/torchvision/torchaudio from the CUDA 12.9 PyTorch index
+   - Installs CUDA/TensorRT packages from `requirements-cuda-cu129.txt`
+   - Installs common app dependencies from `requirements-base.txt`
+   - Runs `scripts/check_runtime_imports.py` and fails fast if imports are missing
+
+2. Download models:
 
    ```bash
    python download_models.py
    ```
 
-4. Validate your GPU runtime (driver/CUDA/TensorRT/providers/plugin deps):
+3. Validate your GPU runtime (driver/CUDA/TensorRT/providers/plugin deps):
 
    ```bash
    ./scripts/validate_linux_gpu_env.sh
    ```
 
-5. Start the app:
+4. Start the app:
 
    ```bash
+   source .venv/bin/activate
    python main.py
    ```
+
+### Extra index details (for manual installs)
+
+If you install manually instead of using the script, you must include the right indexes:
+
+- Torch cu129: `--index-url https://download.pytorch.org/whl/cu129`
+- NVIDIA Python wheels: `--extra-index-url https://pypi.nvidia.com`
+
+The installer script configures these automatically.
 
 ### TensorRT notes for Linux / Blackwell
 
