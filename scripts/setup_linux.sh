@@ -25,13 +25,6 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fail "Required command '$1' was not found in PATH."
 }
 
-host_python_can_run_preflight() {
-  python3 - <<'PY' >/dev/null 2>&1
-import sys
-raise SystemExit(0 if sys.version_info >= (3, 9) else 1)
-PY
-}
-
 load_conda() {
   if command -v conda >/dev/null 2>&1; then
     # shellcheck disable=SC1091
@@ -66,27 +59,13 @@ print_host_summary() {
     log "GPU / driver / CUDA:"
     nvidia-smi --query-gpu=name,driver_version,cuda_version --format=csv,noheader || true
   else
-    warn "nvidia-smi is missing on PATH; continuing because some pods expose GPU tooling late."
+    warn "nvidia-smi is missing; GPU runtime cannot be validated."
   fi
   if command -v nvcc >/dev/null 2>&1; then
     nvcc --version | tail -n 1 || true
   else
     warn "nvcc is not installed or not on PATH; relying on driver-reported CUDA runtime only."
   fi
-}
-
-run_host_preflight() {
-  if host_python_can_run_preflight; then
-    log "Running non-fatal host preflight (uses host python only for warnings)."
-    python3 "$PRECHECK_SCRIPT" --stage host --before-install || true
-  else
-    warn "Host python3 is too old to run the preflight helper; continuing to the Python 3.11 conda env creation step."
-  fi
-}
-
-run_env_preflight() {
-  log "Running env preflight using the activated Python 3.11 environment."
-  python "$PRECHECK_SCRIPT" --stage env --before-install --strict
 }
 
 patch_cudnn_pin_if_needed() {
@@ -198,11 +177,12 @@ main() {
   require_cmd python3
   require_cmd bash
   print_host_summary
-  run_host_preflight
+
+  log "Running fast preflight before any heavy installs."
+  python3 "$PRECHECK_SCRIPT"
 
   activate_env
   python -c 'import sys; assert sys.version_info[:2] == (3, 11), sys.version'
-  run_env_preflight
   patch_cudnn_pin_if_needed
   pip_install
   install_base
