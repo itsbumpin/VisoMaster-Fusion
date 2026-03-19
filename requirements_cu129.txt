@@ -1,5 +1,7 @@
 # Backward-compatible aggregate requirements file.
-# For deterministic Linux/Runpod setup use scripts/install_runpod.sh.
+# Windows users and existing automation may continue using this file.
+# Linux/Runpod users should prefer scripts/setup_linux.sh so preflight checks,
+# package indexes, model downloads, and runtime validation happen automatically.
 -r requirements-base.txt
 -r requirements-cuda-cu129.txt
 torch==2.8.0+cu129
