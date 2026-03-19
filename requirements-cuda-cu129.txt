@@ -1,9 +1,14 @@
 # CUDA/Torch/TensorRT stack for Linux/Runpod CUDA 12.9 environments.
 # Install this file after torch/torchvision/torchaudio are installed from
 # https://download.pytorch.org/whl/cu129.
+#
+# The cuDNN pin intentionally uses a compatible range instead of a single build
+# because the exact 9.10.2.21 wheel has caused resolver failures on fresh Linux
+# pods. The setup script still verifies the installed runtime and reports when
+# TensorRT is unavailable so the app can fall back to CUDA cleanly.
 
 cuda-toolkit==12.9.1
-nvidia-cudnn-cu12==9.10.2.21
+nvidia-cudnn-cu12>=9.10,<10
 tensorrt-cu12==10.9.0.34
 tensorrt-cu12_libs==10.9.0.34
 tensorrt-cu12_bindings==10.9.0.34

@@ -264,69 +264,83 @@ VisoMaster-Fusion would not be possible without the incredible work of:
 -   **Many Optimizations**: Nyny (https://github.com/Elricfae/VisoMaster---Modded)
 
 
-## Linux / Runpod (CUDA 12.9) Quick Start
+## Linux / Runpod / Kasm Quick Start
 
-Use this flow on fresh Linux GPU pods (including RTX PRO 6000 Blackwell):
+This is the recommended flow for fresh Linux GPU environments. A new user should only need these commands after cloning the repo:
 
-1. Run the one-shot installer:
+```bash
+bash scripts/setup_linux.sh
+bash scripts/run_linux.sh
+```
 
-   ```bash
-   ./scripts/install_runpod.sh
-   ```
+### What was broken before
 
-   What it does:
+- Linux users had to piece together multiple install commands, package indexes, and model downloads by hand.
+- Lightweight UI/runtime packages could be hidden behind heavyweight CUDA/TensorRT installation failures.
+- The old strict cuDNN pin could fail dependency resolution on fresh pods.
+- TensorRT availability was hard to diagnose because Python wheels, shared libraries, plugin compatibility, and ONNX Runtime provider state were not summarized in one place.
 
-   - Creates/uses `.venv` (override with `VENV_DIR=/path ./scripts/install_runpod.sh`)
-   - Installs torch/torchvision/torchaudio from the CUDA 12.9 PyTorch index
-   - Installs CUDA/TensorRT packages from `requirements-cuda-cu129.txt`
-   - Installs common app dependencies from `requirements-base.txt`
-   - Runs `scripts/check_runtime_imports.py` and fails fast if imports are missing
+### What the new flow does
 
-2. Download models:
+`bash scripts/setup_linux.sh` now:
 
-   ```bash
-   python download_models.py
-   ```
+1. Runs `scripts/preflight_linux.py` first so unsupported Python, missing package indexes, missing Qt system libraries, or unsupported NVIDIA driver/CUDA combinations fail early.
+2. Detects Linux, GPU, NVIDIA driver, CUDA runtime, and TensorRT shared-library discoverability before the heavy install starts.
+3. Creates or reuses a conda environment named `visomaster` with Python 3.11.
+4. Installs `requirements-base.txt` first so PySide6 and other UI/runtime packages are not blocked by CUDA resolver issues.
+5. Installs CUDA 12.9 torch wheels from the PyTorch CUDA index and TensorRT/cuDNN packages from the NVIDIA index.
+6. Applies the Linux-safe cuDNN compatibility range automatically if an older strict pin is still present.
+7. Explicitly installs import-sensitive package names such as `pyqt-toast-notification` and `pyqtdarktheme`.
+8. Downloads models automatically.
+9. Runs import smoke tests and prints a final summary showing whether TensorRT is available or whether the app will run in CUDA fallback mode.
 
-3. Validate your GPU runtime (driver/CUDA/TensorRT/providers/plugin deps):
+`bash scripts/run_linux.sh` now:
 
-   ```bash
-   ./scripts/validate_linux_gpu_env.sh
-   ```
+- Activates the expected conda env.
+- Sets `LD_LIBRARY_PATH`, `QT_PLUGIN_PATH`, and `QT_QPA_PLATFORM_PLUGIN_PATH` automatically.
+- Prints whether the app is launching with TensorRT, CUDA fallback, or CPU fallback.
+- Starts `python main.py` cleanly without extra per-session manual setup.
 
-4. Start the app:
+### Linux files involved
 
-   ```bash
-   source .venv/bin/activate
-   python main.py
-   ```
+- `requirements-base.txt`: common runtime and UI dependencies.
+- `requirements-cuda-cu129.txt`: CUDA/TensorRT/cuDNN packages for Linux GPU setups.
+- `requirements-dev.txt`: optional developer tools.
+- `requirements_cu129.txt`: backward-compatible aggregate file kept for existing Windows/manual workflows.
 
-### Extra index details (for manual installs)
+### Manual commands if you need diagnostics
 
-If you install manually instead of using the script, you must include the right indexes:
+Fast preflight before install:
 
-- Torch cu129: `--index-url https://download.pytorch.org/whl/cu129`
-- NVIDIA Python wheels: `--extra-index-url https://pypi.nvidia.com`
+```bash
+python3 scripts/preflight_linux.py
+```
 
-The installer script configures these automatically.
+Import smoke test after install:
+
+```bash
+python scripts/check_runtime_imports.py
+```
+
+Legacy runtime probe:
+
+```bash
+bash scripts/validate_linux_gpu_env.sh
+```
 
 ### TensorRT notes for Linux / Blackwell
 
-- The app now validates runtime compatibility at startup and logs:
-  - NVIDIA driver version
-  - CUDA version
-  - GPU name
-  - TensorRT Python package version
-  - ONNX Runtime providers
-  - TensorRT shared libraries found
-- On Linux Blackwell systems, the app enables a **safe-mode default** and prefers **CUDA** when TensorRT runtime/provider compatibility is incomplete.
-- For custom TensorRT plugins (such as `model_assets/libgrid_sample_3d_plugin.so`), missing shared libraries are detected before engine load/build. If dependencies are missing (for example `libnvinfer.so.8` on a TensorRT 10 runtime), the app will clearly warn and fall back to ONNX Runtime/CUDA instead of crashing.
+- The app validates runtime compatibility at startup and logs the GPU name, driver version, CUDA version, ONNX Runtime providers, TensorRT Python package state, and TensorRT shared-library discovery.
+- If TensorRT cannot be made fully functional, the scripts still install the CUDA path and tell you exactly why TensorRT is unavailable.
+- The bundled Linux custom plugin `model_assets/libgrid_sample_3d_plugin.so` may still require rebuilding if it was compiled against an older TensorRT ABI such as `libnvinfer.so.8`. In that case, the install and run scripts keep the app usable through CUDA fallback instead of failing late.
 
-### Current TensorRT blocker
+### Manual package indexes
 
-- The bundled Linux custom plugin is a prebuilt binary (`model_assets/libgrid_sample_3d_plugin.so`).
-- If it was compiled against TensorRT 8 (`libnvinfer.so.8`) and your pod only has newer TensorRT libraries, that specific plugin cannot be loaded until it is rebuilt against the target TensorRT toolchain.
-- The fallback path is now automatic and non-fatal; rebuilding that plugin is still required for full TensorRT coverage of models that depend on it.
+If you intentionally bypass `scripts/setup_linux.sh`, you still need these indexes:
+
+- Torch CUDA 12.9 wheels: `--index-url https://download.pytorch.org/whl/cu129`
+- NVIDIA packages: `--extra-index-url https://pypi.nvidia.com`
+- PyPI base packages: `--index-url https://pypi.org/simple`
 
 ## **Troubleshooting**
 - If you face CUDA-related issues, ensure your GPU drivers are up to date.
